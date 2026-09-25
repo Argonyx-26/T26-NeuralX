@@ -63,3 +63,38 @@ def format_alert(risk_data: dict) -> str:
 
     message = "\n".join(lines).strip()
     return message
+
+def format_spoken_alert(risk_data: dict) -> str:
+    """
+    Creates a simplified, spoken-language version of the alert for text-to-speech.
+    """
+    final_risk = float(risk_data.get("final_risk", 0.0))
+    disease = risk_data.get("disease", "Unknown Condition")
+    crop = risk_data.get("crop", "crop")
+    treatment = risk_data.get("treatment", "Consult local Krishi Vigyan Kendra")
+    spray_start = risk_data.get("spray_start", "")
+    spray_end = risk_data.get("spray_end", "")
+    estimated_loss = risk_data.get("estimated_loss_rupees", 0)
+
+    # Determine risk levels
+    if final_risk > 0.7:
+        risk_level = "high"
+    elif final_risk >= 0.4:
+        risk_level = "moderate"
+    else:
+        risk_level = "low"
+
+    # Round rupee amount to nearest hundred
+    rounded_loss = int(round(estimated_loss / 100) * 100)
+
+    # Build the spoken sentence
+    sentences = [f"{risk_level.title()} alert for your {crop} field.", f"{disease} risk is {risk_level}."]
+    
+    if spray_start and spray_end:
+        sentences.append(f"Please spray {treatment} between {spray_start} and {spray_end} today.")
+    else:
+        sentences.append(f"Please spray {treatment} today.")
+        
+    sentences.append(f"If untreated, you may lose around {rounded_loss} rupees.")
+    
+    return " ".join(sentences)

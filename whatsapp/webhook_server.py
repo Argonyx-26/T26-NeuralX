@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Import KrishiRaksha submodules
-from formatter import format_alert
+from formatter import format_alert, format_spoken_alert
 from voice import generate_voice_note
 
 # =====================================================================
@@ -51,51 +51,41 @@ CONVERSATION_STATE: Dict[str, Dict[str, Any]] = {}
 # HELPER FUNCTIONS
 # =====================================================================
 
-def parse_crop_and_sowing_date(text: str) -> Tuple[Optional[str], Optional[str]]:
+def parse_crop_date_acreage(text: str):
     """
-    Parses user input like 'Tomato, 10 September', 'Wheat, 15 Oct 2026', or 'Rice, 2026-09-10'
-    into (crop_name, 'YYYY-MM-DD'). Returns (None, None) if parsing fails.
+    Parses user input like 'Tomato, 10 September, 2'
+    into (crop_name, 'YYYY-MM-DD', acreage). Returns (None, None, None) if parsing fails.
     """
     if not text or not isinstance(text, str):
-        return None, None
+        return None, None, None
 
     text = text.strip()
+    parts = [p.strip() for p in text.split(",")]
     
-    # Split by comma or semicolon if present
-    if "," in text:
-        parts = [p.strip() for p in text.split(",", 1)]
-    elif ";" in text:
-        parts = [p.strip() for p in text.split(";", 1)]
-    else:
-        # Fallback: Split on first space if formatted like 'Tomato 10 September'
-        words = text.split()
-        if len(words) >= 3:
-            parts = [words[0], " ".join(words[1:])]
-        else:
-            return None, None
+    if len(parts) < 3:
+        return None, None, None
 
-    crop_name = parts[0].strip().title()
+    crop_name = parts[0].title()
     date_str = parts[1].strip()
+    try:
+        acreage = float(parts[2].strip())
+    except ValueError:
+        return None, None, None
 
     # Month name to number mapping for flexible parsing
     months = {
-        "jan": 1, "january": 1,
-        "feb": 2, "february": 2,
-        "mar": 3, "march": 3,
-        "apr": 4, "april": 4,
-        "may": 5,
-        "jun": 6, "june": 6,
-        "jul": 7, "july": 7,
-        "aug": 8, "august": 8,
-        "sep": 9, "september": 9, "sept": 9,
-        "oct": 10, "october": 10,
-        "nov": 11, "november": 11,
-        "dec": 12, "december": 12
+        "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+        "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6,
+        "jul": 7, "july": 7, "aug": 8, "august": 8,
+        "sep": 9, "september": 9, "sept": 9, "oct": 10, "october": 10,
+        "nov": 11, "november": 11, "dec": 12, "december": 12
     }
 
+    import datetime
     current_year = datetime.datetime.now().year
     parsed_date = None
 
+    import re
     # Try ISO format YYYY-MM-DD
     iso_match = re.search(r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})', date_str)
     if iso_match:
@@ -117,7 +107,7 @@ def parse_crop_and_sowing_date(text: str) -> Tuple[Optional[str], Optional[str]]
             except ValueError:
                 pass
 
-    # Try DD Month Name (e.g., '10 September', '15 Oct', '10 September 2026')
+    # Try DD Month Name (e.g., '10 September')
     if not parsed_date:
         word_date_match = re.search(r'(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]+)(?:\s+(\d{2,4}))?', date_str, re.IGNORECASE)
         if word_date_match:
@@ -134,27 +124,10 @@ def parse_crop_and_sowing_date(text: str) -> Tuple[Optional[str], Optional[str]]
                 except ValueError:
                     pass
 
-    # Try Month Name DD (e.g. 'September 10', 'Oct 15, 2026')
-    if not parsed_date:
-        word_date_match2 = re.search(r'([A-Za-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+(\d{2,4}))?', date_str, re.IGNORECASE)
-        if word_date_match2:
-            month_word = word_date_match2.group(1).lower()
-            day = int(word_date_match2.group(2))
-            year = int(word_date_match2.group(3)) if word_date_match2.group(3) else current_year
-            if year < 100:
-                year += 2000
-            
-            month_num = months.get(month_word)
-            if month_num:
-                try:
-                    parsed_date = datetime.date(year, month_num, day)
-                except ValueError:
-                    pass
-
     if crop_name and parsed_date:
-        return crop_name, parsed_date.strftime("%Y-%m-%d")
+        return crop_name, parsed_date.strftime("%Y-%m-%d"), acreage
 
-    return None, None
+    return None, None, None
 
 
 def download_twilio_media(media_url: str, save_path: str) -> bool:
@@ -324,14 +297,16 @@ def whatsapp_webhook():
                 "farmer_name": profile_name,
                 "latitude": None,
                 "longitude": None,
+                "language_pref": "English",
                 "crop": None,
                 "sowing_date": None,
+                "acreage": None,
                 "field_id": None
             }
             welcome_msg = (
                 "Welcome to KrishiRaksha 🌱\n"
-                "To get started, please share your location, then reply with your crop and sowing date in this format:\n"
-                "Tomato, 10 September"
+                "To get started, please share your field location pin first.\n"
+                "Tap 📎 (Attach) -> Location -> Send your current location."
             )
             resp.message(welcome_msg)
             return Response(str(resp), mimetype="application/xml")
@@ -349,12 +324,11 @@ def whatsapp_webhook():
                     lon = float(longitude_str)
                     current_session["latitude"] = lat
                     current_session["longitude"] = lon
-                    current_session["stage"] = "awaiting_crop_date"
+                    current_session["stage"] = "awaiting_name_lang"
 
                     reply_text = (
                         "📍 Location received!\n"
-                        "Now reply with your crop and sowing date in this format:\n"
-                        "Tomato, 10 September"
+                        "Please reply with your name and preferred language, like this: Ramesh, Kannada"
                     )
                     resp.message(reply_text)
                     return Response(str(resp), mimetype="application/xml")
@@ -362,7 +336,6 @@ def whatsapp_webhook():
                     resp.message("⚠️ Could not read GPS coordinates. Please share your location pin again via WhatsApp.")
                     return Response(str(resp), mimetype="application/xml")
             else:
-                # User sent text or photo before sending location pin
                 prompt_text = (
                     "📍 Please share your field location pin first.\n"
                     "Tap 📎 (Attach) -> Location -> Send your current location."
@@ -371,33 +344,54 @@ def whatsapp_webhook():
                 return Response(str(resp), mimetype="application/xml")
 
         # -------------------------------------------------------------
-        # STAGE: AWAITING CROP & SOWING DATE
+        # STAGE: AWAITING NAME & LANGUAGE
         # -------------------------------------------------------------
-        elif current_stage == "awaiting_crop_date":
-            crop_name, sowing_date_iso = parse_crop_and_sowing_date(body_text)
+        elif current_stage == "awaiting_name_lang":
+            parts = [p.strip() for p in body_text.split(",")]
+            if len(parts) >= 2:
+                current_session["farmer_name"] = parts[0]
+                current_session["language_pref"] = parts[1].title()
+                current_session["stage"] = "awaiting_crop_date_land"
 
-            if not crop_name or not sowing_date_iso:
-                fallback_crop_msg = (
-                    "⚠️ Could not understand the crop and sowing date.\n"
-                    "Please reply in this format:\n"
-                    "*Crop, DD Month*\n\n"
-                    "Example: *Tomato, 10 September*"
+                reply_text = (
+                    "Almost done! Now send your crop, sowing date, and land size in acres, like this: Tomato, 10 September, 2"
                 )
-                resp.message(fallback_crop_msg)
+                resp.message(reply_text)
+                return Response(str(resp), mimetype="application/xml")
+            else:
+                resp.message("⚠️ Please reply in this exact format: Name, Language\nExample: Ramesh, Kannada")
+                return Response(str(resp), mimetype="application/xml")
+
+        # -------------------------------------------------------------
+        # STAGE: AWAITING CROP, DATE, LAND
+        # -------------------------------------------------------------
+        elif current_stage == "awaiting_crop_date_land":
+            crop_name, sowing_date_iso, acreage = parse_crop_date_acreage(body_text)
+
+            if not crop_name or not sowing_date_iso or acreage is None:
+                fallback_msg = (
+                    "⚠️ Could not understand. Please reply in this format:\n"
+                    "*Crop, DD Month, Acreage*\n"
+                    "Example: *Tomato, 10 September, 2*"
+                )
+                resp.message(fallback_msg)
                 return Response(str(resp), mimetype="application/xml")
 
             current_session["crop"] = crop_name
             current_session["sowing_date"] = sowing_date_iso
+            current_session["acreage"] = acreage
 
             # Register field with the backend API: POST /fields
             clean_phone = sender_phone.replace("whatsapp:", "").strip()
             field_payload = {
                 "farmer_name": current_session.get("farmer_name", "Farmer"),
+                "language_pref": current_session.get("language_pref", "English"),
                 "phone": clean_phone,
                 "latitude": current_session.get("latitude", 20.5937),
                 "longitude": current_session.get("longitude", 78.9629),
                 "crop": crop_name,
-                "sowing_date": sowing_date_iso
+                "sowing_date": sowing_date_iso,
+                "acreage": acreage
             }
             print(f"[*] Sending payload to backend: {field_payload}")
 
@@ -416,65 +410,66 @@ def whatsapp_webhook():
             return Response(str(resp), mimetype="application/xml")
 
         # -------------------------------------------------------------
+        # STAGE: AWAITING VOICE CHOICE
+        # -------------------------------------------------------------
+        elif current_stage == "awaiting_voice_choice":
+            ans = body_text.lower()
+            if ans in ["yes", "voice", "audio", "y"]:
+                # Generate and send voice
+                field_id = current_session.get("field_id", 101)
+                timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                voice_filename = f"voice_field_{field_id}_{timestamp_str}.mp3"
+                voice_path = os.path.join(MEDIA_DIR, voice_filename)
+                
+                lang_pref = current_session.get("language_pref", "English")
+                lang_map = {"Kannada": "kn", "Telugu": "te", "Marathi": "mr", "Hindi": "hi", "English": "en"}
+                tts_lang = lang_map.get(lang_pref, "en")
+                
+                spoken_text = current_session.get("last_spoken_alert", "No audio available.")
+                
+                if SERVER_PUBLIC_URL:
+                    try:
+                        generate_voice_note(spoken_text, voice_path, lang=tts_lang)
+                        tw_msg = resp.message("Sent.")
+                        tw_msg.media(f"{SERVER_PUBLIC_URL}/media/{voice_filename}")
+                    except Exception as ve:
+                        print(f"[Voice Generation Note] Could not attach voice note: {ve}")
+            # Regardless of answer, go back to registered
+            current_session["stage"] = "registered"
+            return Response(str(resp), mimetype="application/xml")
+
+        # -------------------------------------------------------------
         # STAGE: REGISTERED (Risk Checks & Leaf Diagnosis)
         # -------------------------------------------------------------
         elif current_stage == "registered":
             field_id = current_session.get("field_id", 101)
 
-            # Case A: User sent an image / leaf photo
+            save_filepath = None
             if media_url:
                 timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 clean_phone_fn = sender_phone.replace("whatsapp:", "").replace("+", "")
                 filename = f"leaf_{clean_phone_fn}_{timestamp_str}.jpg"
                 save_filepath = os.path.join(UPLOADS_DIR, filename)
-
-                # Download media from Twilio CDN with Auth
                 download_ok = download_twilio_media(media_url, save_filepath)
                 if not download_ok:
-                    # In case of CDN download issue, pass the direct media URL as fallback
                     save_filepath = media_url
 
-                # Call Backend API: POST /risk/{field_id} with image_path
-                risk_data = call_backend_get_risk(field_id, image_path=save_filepath)
-                if not risk_data.get("crop") and current_session.get("crop"):
-                    risk_data["crop"] = current_session.get("crop")
+            risk_data = call_backend_get_risk(field_id, image_path=save_filepath)
+            if not risk_data.get("crop") and current_session.get("crop"):
+                risk_data["crop"] = current_session.get("crop")
 
-                alert_text = format_alert(risk_data)
-                tw_msg = resp.message(alert_text)
-
-                # Generate voice note if public server URL is configured
-                if SERVER_PUBLIC_URL:
-                    try:
-                        voice_filename = f"voice_field_{field_id}_{timestamp_str}.mp3"
-                        voice_path = os.path.join(MEDIA_DIR, voice_filename)
-                        generate_voice_note(alert_text, voice_path)
-                        tw_msg.media(f"{SERVER_PUBLIC_URL}/media/{voice_filename}")
-                    except Exception as ve:
-                        print(f"[Voice Generation Note] Could not attach voice note: {ve}")
-
-                return Response(str(resp), mimetype="application/xml")
-
-            # Case B: User sent text (e.g. "check risk", "status", "hi", etc.)
-            else:
-                # Call Backend API: POST /risk/{field_id} with empty body (weather-only)
-                risk_data = call_backend_get_risk(field_id, image_path=None)
-                if not risk_data.get("crop") and current_session.get("crop"):
-                    risk_data["crop"] = current_session.get("crop")
-
-                alert_text = format_alert(risk_data)
-                tw_msg = resp.message(alert_text)
-
-                # Generate voice note if public server URL is configured
-                if SERVER_PUBLIC_URL:
-                    try:
-                        voice_filename = f"voice_weather_{field_id}.mp3"
-                        voice_path = os.path.join(MEDIA_DIR, voice_filename)
-                        generate_voice_note(alert_text, voice_path)
-                        tw_msg.media(f"{SERVER_PUBLIC_URL}/media/{voice_filename}")
-                    except Exception as ve:
-                        print(f"[Voice Generation Note] Could not attach voice note: {ve}")
-
-                return Response(str(resp), mimetype="application/xml")
+            alert_text = format_alert(risk_data)
+            spoken_text = format_spoken_alert(risk_data)
+            current_session["last_spoken_alert"] = spoken_text
+            
+            # Send text alert
+            resp.message(alert_text)
+            
+            # Ask for voice choice
+            resp.message("Would you like to hear this as a voice message too? Reply YES or NO.")
+            current_session["stage"] = "awaiting_voice_choice"
+            
+            return Response(str(resp), mimetype="application/xml")
 
         # -------------------------------------------------------------
         # FALLBACK / UNRECOGNIZED STAGE
@@ -483,8 +478,8 @@ def whatsapp_webhook():
             current_session["stage"] = "awaiting_location"
             resp.message(
                 "Welcome to KrishiRaksha 🌱\n"
-                "To get started, please share your location, then reply with your crop and sowing date in this format:\n"
-                "Tomato, 10 September"
+                "To get started, please share your field location pin first.\n"
+                "Tap 📎 (Attach) -> Location -> Send your current location."
             )
             return Response(str(resp), mimetype="application/xml")
 
