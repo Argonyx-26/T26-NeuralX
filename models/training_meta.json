@@ -1,0 +1,18 @@
+{
+  "class_names": [
+    "Tomato___Early_blight",
+    "Tomato___healthy"
+  ],
+  "best_val_acc": 0.9922680412371134,
+  "test_acc": 0.982051282051282,
+  "confusion_matrix": [
+    [
+      144,
+      6
+    ],
+    [
+      1,
+      239
+    ]
+  ]
+}
